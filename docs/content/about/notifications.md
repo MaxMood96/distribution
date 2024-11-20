@@ -10,7 +10,7 @@ pushes and pulls and layer pushes and pulls. These actions are serialized into
 events. The events are queued into a registry-internal broadcast system which
 queues and dispatches events to [_Endpoints_](#endpoints).
 
-![Workflow of registry notifications](../../images/notifications.png)
+![Workflow of registry notifications](/distribution/images/notifications.png)
 
 ## Endpoints
 
@@ -24,7 +24,7 @@ order is not guaranteed.
 
 ## Configuration
 
-To setup a registry instance to send notifications to endpoints, one must add
+To set up a registry instance to send notifications to endpoints, one must add
 them to the configuration. A simple example follows:
 
 ```yaml
@@ -45,7 +45,7 @@ The above would configure the registry with an endpoint to send events to
 5 failures happen consecutively, the registry backs off for 1 second before
 trying again.
 
-For details on the fields, see the [configuration documentation](../configuration/#notifications).
+For details on the fields, see the [configuration documentation](configuration.md#notifications).
 
 A properly configured endpoint should lead to a log message from the registry
 upon startup:

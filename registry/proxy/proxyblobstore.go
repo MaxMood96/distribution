@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/internal/dcontext"
@@ -33,33 +34,31 @@ var inflight = make(map[digest.Digest]struct{})
 // mu protects inflight
 var mu sync.Mutex
 
-func setResponseHeaders(w http.ResponseWriter, length int64, mediaType string, digest digest.Digest) {
-	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
-	w.Header().Set("Content-Type", mediaType)
-	w.Header().Set("Docker-Content-Digest", digest.String())
-	w.Header().Set("Etag", digest.String())
+func setResponseHeaders(h http.Header, length int64, mediaType string, digest digest.Digest) {
+	h.Set("Content-Length", strconv.FormatInt(length, 10))
+	h.Set("Content-Type", mediaType)
+	h.Set("Docker-Content-Digest", digest.String())
+	h.Set("Etag", digest.String())
 }
 
-func (pbs *proxyBlobStore) copyContent(ctx context.Context, dgst digest.Digest, writer io.Writer) (distribution.Descriptor, error) {
+func (pbs *proxyBlobStore) copyContent(ctx context.Context, dgst digest.Digest, writer io.Writer, h http.Header) (v1.Descriptor, error) {
 	desc, err := pbs.remoteStore.Stat(ctx, dgst)
 	if err != nil {
-		return distribution.Descriptor{}, err
+		return v1.Descriptor{}, err
 	}
 
-	if w, ok := writer.(http.ResponseWriter); ok {
-		setResponseHeaders(w, desc.Size, desc.MediaType, dgst)
-	}
+	setResponseHeaders(h, desc.Size, desc.MediaType, dgst)
 
 	remoteReader, err := pbs.remoteStore.Open(ctx, dgst)
 	if err != nil {
-		return distribution.Descriptor{}, err
+		return v1.Descriptor{}, err
 	}
 
 	defer remoteReader.Close()
 
 	_, err = io.CopyN(writer, remoteReader, desc.Size)
 	if err != nil {
-		return distribution.Descriptor{}, err
+		return v1.Descriptor{}, err
 	}
 
 	proxyMetrics.BlobPull(uint64(desc.Size))
@@ -102,7 +101,7 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 		// Will return the blob from the remote store directly.
 		// TODO Maybe we could reuse the these blobs are serving remotely and caching locally.
 		mu.Unlock()
-		_, err := pbs.copyContent(ctx, dgst, w)
+		_, err := pbs.copyContent(ctx, dgst, w, w.Header())
 		return err
 	}
 	inflight[dgst] = struct{}{}
@@ -122,7 +121,7 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	// Serving client and storing locally over same fetching request.
 	// This can prevent a redundant blob fetching.
 	multiWriter := io.MultiWriter(w, bw)
-	desc, err := pbs.copyContent(ctx, dgst, multiWriter)
+	desc, err := pbs.copyContent(ctx, dgst, multiWriter, w.Header())
 	if err != nil {
 		return err
 	}
@@ -148,18 +147,18 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	return nil
 }
 
-func (pbs *proxyBlobStore) Stat(ctx context.Context, dgst digest.Digest) (distribution.Descriptor, error) {
+func (pbs *proxyBlobStore) Stat(ctx context.Context, dgst digest.Digest) (v1.Descriptor, error) {
 	desc, err := pbs.localStore.Stat(ctx, dgst)
 	if err == nil {
 		return desc, err
 	}
 
 	if err != distribution.ErrBlobUnknown {
-		return distribution.Descriptor{}, err
+		return v1.Descriptor{}, err
 	}
 
 	if err := pbs.authChallenger.tryEstablishChallenges(ctx); err != nil {
-		return distribution.Descriptor{}, err
+		return v1.Descriptor{}, err
 	}
 
 	return pbs.remoteStore.Stat(ctx, dgst)
@@ -188,8 +187,8 @@ func (pbs *proxyBlobStore) Get(ctx context.Context, dgst digest.Digest) ([]byte,
 }
 
 // Unsupported functions
-func (pbs *proxyBlobStore) Put(ctx context.Context, mediaType string, p []byte) (distribution.Descriptor, error) {
-	return distribution.Descriptor{}, distribution.ErrUnsupported
+func (pbs *proxyBlobStore) Put(ctx context.Context, mediaType string, p []byte) (v1.Descriptor, error) {
+	return v1.Descriptor{}, distribution.ErrUnsupported
 }
 
 func (pbs *proxyBlobStore) Create(ctx context.Context, options ...distribution.BlobCreateOption) (distribution.BlobWriter, error) {
@@ -200,8 +199,8 @@ func (pbs *proxyBlobStore) Resume(ctx context.Context, id string) (distribution.
 	return nil, distribution.ErrUnsupported
 }
 
-func (pbs *proxyBlobStore) Mount(ctx context.Context, sourceRepo reference.Named, dgst digest.Digest) (distribution.Descriptor, error) {
-	return distribution.Descriptor{}, distribution.ErrUnsupported
+func (pbs *proxyBlobStore) Mount(ctx context.Context, sourceRepo reference.Named, dgst digest.Digest) (v1.Descriptor, error) {
+	return v1.Descriptor{}, distribution.ErrUnsupported
 }
 
 func (pbs *proxyBlobStore) Open(ctx context.Context, dgst digest.Digest) (io.ReadSeekCloser, error) {

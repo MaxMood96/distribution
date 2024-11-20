@@ -18,17 +18,24 @@ import (
 	"github.com/distribution/distribution/v3/registry/storage/driver/inmemory"
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-var sbsMu sync.Mutex
-var randSource rand.Rand
+var (
+	sbsMu      sync.Mutex
+	randSource rand.Rand
+)
 
 type statsBlobStore struct {
 	stats map[string]int
 	blobs distribution.BlobStore
 }
 
-func (sbs statsBlobStore) Put(ctx context.Context, mediaType string, p []byte) (distribution.Descriptor, error) {
+func init() {
+	randSource = *rand.New(rand.NewSource(42))
+}
+
+func (sbs statsBlobStore) Put(ctx context.Context, mediaType string, p []byte) (v1.Descriptor, error) {
 	sbsMu.Lock()
 	sbs.stats["put"]++
 	sbsMu.Unlock()
@@ -76,7 +83,7 @@ func (sbs statsBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter, 
 	return sbs.blobs.ServeBlob(ctx, w, r, dgst)
 }
 
-func (sbs statsBlobStore) Stat(ctx context.Context, dgst digest.Digest) (distribution.Descriptor, error) {
+func (sbs statsBlobStore) Stat(ctx context.Context, dgst digest.Digest) (v1.Descriptor, error) {
 	sbsMu.Lock()
 	sbs.stats["stat"]++
 	sbsMu.Unlock()
@@ -94,7 +101,7 @@ func (sbs statsBlobStore) Delete(ctx context.Context, dgst digest.Digest) error 
 
 type testEnv struct {
 	numUnique int
-	inRemote  []distribution.Descriptor
+	inRemote  []v1.Descriptor
 	store     proxyBlobStore
 	ctx       context.Context
 }
@@ -195,19 +202,15 @@ func makeBlob(size int) []byte {
 	return blob
 }
 
-func init() {
-	randSource = *rand.New(rand.NewSource(42))
-}
-
 func populate(t *testing.T, te *testEnv, blobCount, size, numUnique int) {
-	var inRemote []distribution.Descriptor
+	var inRemote []v1.Descriptor
 
 	for i := 0; i < numUnique; i++ {
 		bytes := makeBlob(size)
 		for j := 0; j < blobCount/numUnique; j++ {
 			desc, err := te.store.remoteStore.Put(te.ctx, "", bytes)
 			if err != nil {
-				t.Fatalf("Put in store")
+				t.Fatal("Put in store")
 			}
 
 			inRemote = append(inRemote, desc)
@@ -277,7 +280,7 @@ func TestProxyStoreStat(t *testing.T) {
 	for _, d := range te.inRemote {
 		_, err := te.store.Stat(te.ctx, d.Digest)
 		if err != nil {
-			t.Fatalf("Error stating proxy store")
+			t.Fatal("Error stating proxy store")
 		}
 	}
 
@@ -442,14 +445,24 @@ func testProxyStoreServe(t *testing.T, te *testEnv, numClients int) {
 
 				err = te.store.ServeBlob(te.ctx, w, r, remoteBlob.Digest)
 				if err != nil {
-					t.Errorf(err.Error())
+					t.Error(err)
 					return
 				}
 
-				bodyBytes := w.Body.Bytes()
+				resp := w.Result()
+				bodyBytes, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					t.Error(err)
+					return
+				}
 				localDigest := digest.FromBytes(bodyBytes)
 				if localDigest != remoteBlob.Digest {
 					t.Errorf("Mismatching blob fetch from proxy")
+					return
+				}
+				if resp.Header.Get("Docker-Content-Digest") != localDigest.String() {
+					t.Errorf("Mismatching digest in response header")
 					return
 				}
 
@@ -501,7 +514,7 @@ func testProxyStoreServe(t *testing.T, te *testEnv, numClients int) {
 
 		err = te.store.ServeBlob(te.ctx, w, r, dr.Digest)
 		if err != nil {
-			t.Fatalf(err.Error())
+			t.Fatal(err)
 		}
 
 		dl := digest.FromBytes(w.Body.Bytes())

@@ -5,19 +5,13 @@ import (
 	"os"
 	"testing"
 
-	"gopkg.in/check.v1"
+	"github.com/stretchr/testify/require"
 )
 
-func Test(t *testing.T) { check.TestingT(t) }
-
-type MiddlewareSuite struct{}
-
-var _ = check.Suite(&MiddlewareSuite{})
-
-func (s *MiddlewareSuite) TestNoConfig(c *check.C) {
+func TestNoConfig(t *testing.T) {
 	options := make(map[string]interface{})
 	_, err := newCloudFrontStorageMiddleware(context.Background(), nil, options)
-	c.Assert(err, check.ErrorMatches, "no baseurl provided")
+	require.ErrorContains(t, err, "no baseurl provided")
 }
 
 func TestCloudFrontStorageMiddlewareGenerateKey(t *testing.T) {
@@ -56,6 +50,6 @@ pZeMRablbPQdp8/1NyIwimq1VlG0ohQ4P6qhW7E09ZMC
 		t.Fatal(err)
 	}
 	if storageDriver == nil {
-		t.Fatal("Driver couldnt be initialized.")
+		t.Fatal("Driver could not be initialized")
 	}
 }

@@ -9,6 +9,16 @@ import (
 	"github.com/opencontainers/go-digest"
 )
 
+var routeDescriptorsMap map[string]RouteDescriptor
+
+func init() {
+	routeDescriptorsMap = make(map[string]RouteDescriptor, len(routeDescriptors))
+
+	for _, descriptor := range routeDescriptors {
+		routeDescriptorsMap[descriptor.Name] = descriptor
+	}
+}
+
 var (
 	nameParameterDescriptor = ParameterDescriptor{
 		Name:        "name",
@@ -213,21 +223,20 @@ var (
 
 const (
 	manifestBody = `{
-   "name": <name>,
-   "tag": <tag>,
-   "fsLayers": [
-      {
-         "blobSum": "<digest>"
-      },
-      ...
-    ]
-   ],
-   "history": <v1 images>,
-   "signature": <JWS>
+    "name": <name>,
+    "tag": <tag>,
+    "fsLayers": [
+        {
+            "blobSum": "<digest>"
+        },
+        ...
+    ],
+    "history": <v1 images>,
+    "signature": <JWS>
 }`
 
 	errorsBody = `{
-	"errors:" [
+	"errors": [
 	    {
             "code": <error code>,
             "message": "<error message>",
@@ -259,7 +268,7 @@ type RouteDescriptor struct {
 	// should match.
 	Path string
 
-	// Entity should be a short, human-readalbe description of the object
+	// Entity should be a short, human-readable description of the object
 	// targeted by the endpoint.
 	Entity string
 
@@ -630,7 +639,8 @@ var routeDescriptors = []RouteDescriptor{
 								Body: BodyDescriptor{
 									ContentType: "application/json",
 									Format: `{
-    "errors:" [{
+    "errors": [
+        {
             "code": "BLOB_UNKNOWN",
             "message": "blob unknown to registry",
             "detail": {
@@ -1557,7 +1567,7 @@ var routeDescriptors = []RouteDescriptor{
 	"repositories": [
 		<name>,
 		...
-	]
+	],
 }`,
 								},
 							},
@@ -1576,7 +1586,7 @@ var routeDescriptors = []RouteDescriptor{
 	"repositories": [
 		<name>,
 		...
-	]
+	],
 	"next": "<url>?last=<name>&n=<last value of n>"
 }`,
 								},
@@ -1599,14 +1609,4 @@ var routeDescriptors = []RouteDescriptor{
 			},
 		},
 	},
-}
-
-var routeDescriptorsMap map[string]RouteDescriptor
-
-func init() {
-	routeDescriptorsMap = make(map[string]RouteDescriptor, len(routeDescriptors))
-
-	for _, descriptor := range routeDescriptors {
-		routeDescriptorsMap[descriptor.Name] = descriptor
-	}
 }

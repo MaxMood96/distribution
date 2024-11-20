@@ -22,8 +22,7 @@ relying entirely on your local registry is the simplest scenario.
 
 ### Gotcha
 
-It's currently not possible to mirror another private registry. Only the central
-Hub can be mirrored.
+It's currently possible to mirror only one upstream registry at a time.
 
 The URL of a pull-through registry mirror must be the root of a domain.
 No path components other than an optional trailing slash (`/`) are allowed.
@@ -39,7 +38,7 @@ The following table shows examples of allowed and disallowed mirror URLs.
 
 > **Note**
 >
-> Mirrors of Docker Hub are still subject to Docker's [fair usage policy](https://www.docker.com/pricing/resource-consumption-updates){: target="blank" rel="noopener" class=“”}.
+> Mirrors of Docker Hub are still subject to Docker's [fair usage policy](https://www.docker.com/pricing/resource-consumption-updates).
 
 ### Solution
 
@@ -73,7 +72,7 @@ be configured to use the `filesystem` driver for storage.
 
 The easiest way to run a registry as a pull through cache is to run the official
 Registry image.
-At least, you need to specify `proxy.remoteurl` within `/etc/docker/registry/config.yml`
+At least, you need to specify `proxy.remoteurl` within `/etc/distribution/config.yml`
 as described in the following subsection.
 
 Multiple registry caches can be deployed over the same back-end. A single
@@ -108,7 +107,7 @@ proxy:
 
 > **Warning**: For the scheduler to clean up old entries, `delete` must
 > be enabled in the registry configuration. See
-> [Registry Configuration](/about/configuration) for more details.
+> [Registry Configuration](../about/configuration.md) for more details.
 
 ### Configure the Docker daemon
 
@@ -125,6 +124,11 @@ and add the `registry-mirrors` key and value, to make the change persistent.
 > **Note**
 >
 > The mirror URL must be the root of the domain.
+
+> **Note**
+>
+> Currently Docker daemon supports only mirrors of Docker Hub.
+> It is not possible to run the Docker daemon against a pull through cache with another upstream registry.
 
 Save the file and reload Docker for the change to take effect.
 

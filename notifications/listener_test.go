@@ -14,6 +14,8 @@ import (
 	"github.com/distribution/distribution/v3/testutil"
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestListener(t *testing.T) {
@@ -79,17 +81,17 @@ func (tl *testListener) ManifestDeleted(repo reference.Named, d digest.Digest) e
 	return nil
 }
 
-func (tl *testListener) BlobPushed(repo reference.Named, desc distribution.Descriptor) error {
+func (tl *testListener) BlobPushed(repo reference.Named, desc v1.Descriptor) error {
 	tl.ops["layer:push"]++
 	return nil
 }
 
-func (tl *testListener) BlobPulled(repo reference.Named, desc distribution.Descriptor) error {
+func (tl *testListener) BlobPulled(repo reference.Named, desc v1.Descriptor) error {
 	tl.ops["layer:pull"]++
 	return nil
 }
 
-func (tl *testListener) BlobMounted(repo reference.Named, desc distribution.Descriptor, fromRepo reference.Named) error {
+func (tl *testListener) BlobMounted(repo reference.Named, desc v1.Descriptor, fromRepo reference.Named) error {
 	tl.ops["layer:mount"]++
 	return nil
 }
@@ -143,8 +145,9 @@ func checkTestRepository(t *testing.T, repository distribution.Repository, remov
 	}
 
 	m := schema2.Manifest{
-		Versioned: schema2.SchemaVersion,
-		Config: distribution.Descriptor{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: schema2.MediaTypeManifest,
+		Config: v1.Descriptor{
 			MediaType: "foo/bar",
 			Digest:    configDgst,
 		},
@@ -161,7 +164,7 @@ func checkTestRepository(t *testing.T, repository distribution.Repository, remov
 			t.Fatal(err)
 		}
 
-		m.Layers = append(m.Layers, distribution.Descriptor{
+		m.Layers = append(m.Layers, v1.Descriptor{
 			MediaType: "application/octet-stream",
 			Digest:    dgst,
 		})
@@ -176,12 +179,12 @@ func checkTestRepository(t *testing.T, repository distribution.Repository, remov
 
 	sm, err := schema2.FromStruct(m)
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Fatal(err)
 	}
 
 	manifests, err := repository.Manifests(ctx)
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Fatal(err)
 	}
 
 	var digestPut digest.Digest
@@ -191,15 +194,15 @@ func checkTestRepository(t *testing.T, repository distribution.Repository, remov
 
 	_, canonical, err := sm.Payload()
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Fatal(err)
 	}
 
 	dgst := digest.FromBytes(canonical)
 	if dgst != digestPut {
-		t.Fatalf("mismatching digest from payload and put")
+		t.Fatal("mismatching digest from payload and put")
 	}
 
-	if err := repository.Tags(ctx).Tag(ctx, tag, distribution.Descriptor{Digest: dgst}); err != nil {
+	if err := repository.Tags(ctx).Tag(ctx, tag, v1.Descriptor{Digest: dgst}); err != nil {
 		t.Fatalf("unexpected error tagging manifest: %v", err)
 	}
 
