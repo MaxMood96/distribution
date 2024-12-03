@@ -1,6 +1,3 @@
-//go:build include_gcs
-// +build include_gcs
-
 package gcs
 
 import (
@@ -17,15 +14,11 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
-	"gopkg.in/check.v1"
 )
-
-// Hook up gocheck into the "go test" runner.
-func Test(t *testing.T) { check.TestingT(t) }
 
 var (
 	gcsDriverConstructor func(rootDirectory string) (storagedriver.StorageDriver, error)
-	skipGCS              func() string
+	skipCheck            func(tb testing.TB)
 )
 
 func init() {
@@ -33,59 +26,51 @@ func init() {
 	credentials := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
 	// Skip GCS storage driver tests if environment variable parameters are not provided
-	skipGCS = func() string {
+	skipCheck = func(tb testing.TB) {
+		tb.Helper()
+
 		if bucket == "" || credentials == "" {
-			return "The following environment variables must be set to enable these tests: REGISTRY_STORAGE_GCS_BUCKET, GOOGLE_APPLICATION_CREDENTIALS"
+			tb.Skip("The following environment variables must be set to enable these tests: REGISTRY_STORAGE_GCS_BUCKET, GOOGLE_APPLICATION_CREDENTIALS")
 		}
-		return ""
-	}
-
-	if skipGCS() != "" {
-		return
-	}
-
-	jsonKey, err := os.ReadFile(credentials)
-	if err != nil {
-		panic(fmt.Sprintf("Error reading JSON key : %v", err))
-	}
-
-	root, err := os.MkdirTemp("", "driver-")
-	if err != nil {
-		panic(err)
-	}
-	defer os.Remove(root)
-	var ts oauth2.TokenSource
-	var email string
-	var privateKey []byte
-
-	ts, err = google.DefaultTokenSource(dcontext.Background(), storage.ScopeFullControl)
-	if err != nil {
-		// Assume that the file contents are within the environment variable since it exists
-		// but does not contain a valid file path
-		jwtConfig, err := google.JWTConfigFromJSON(jsonKey, storage.ScopeFullControl)
-		if err != nil {
-			panic(fmt.Sprintf("Error reading JWT config : %s", err))
-		}
-		email = jwtConfig.Email
-		privateKey = jwtConfig.PrivateKey
-		if len(privateKey) == 0 {
-			panic("Error reading JWT config : missing private_key property")
-		}
-		if email == "" {
-			panic("Error reading JWT config : missing client_email property")
-		}
-		ts = jwtConfig.TokenSource(dcontext.Background())
-	}
-
-	gcs, err := storage.NewClient(dcontext.Background(), option.WithCredentialsJSON(jsonKey))
-	if err != nil {
-		panic(fmt.Sprintf("Error initializing gcs client : %v", err))
 	}
 
 	gcsDriverConstructor = func(rootDirectory string) (storagedriver.StorageDriver, error) {
+		jsonKey, err := os.ReadFile(credentials)
+		if err != nil {
+			panic(fmt.Sprintf("Error reading JSON key : %v", err))
+		}
+
+		var ts oauth2.TokenSource
+		var email string
+		var privateKey []byte
+
+		ts, err = google.DefaultTokenSource(dcontext.Background(), storage.ScopeFullControl)
+		if err != nil {
+			// Assume that the file contents are within the environment variable since it exists
+			// but does not contain a valid file path
+			jwtConfig, err := google.JWTConfigFromJSON(jsonKey, storage.ScopeFullControl)
+			if err != nil {
+				panic(fmt.Sprintf("Error reading JWT config : %s", err))
+			}
+			email = jwtConfig.Email
+			privateKey = jwtConfig.PrivateKey
+			if len(privateKey) == 0 {
+				panic("Error reading JWT config : missing private_key property")
+			}
+			if email == "" {
+				panic("Error reading JWT config : missing client_email property")
+			}
+			ts = jwtConfig.TokenSource(dcontext.Background())
+		}
+
+		gcs, err := storage.NewClient(dcontext.Background(), option.WithCredentialsJSON(jsonKey))
+		if err != nil {
+			panic(fmt.Sprintf("Error initializing gcs client : %v", err))
+		}
+
 		parameters := driverParameters{
 			bucket:         bucket,
-			rootDirectory:  root,
+			rootDirectory:  rootDirectory,
 			email:          email,
 			privateKey:     privateKey,
 			client:         oauth2.NewClient(dcontext.Background(), ts),
@@ -96,17 +81,29 @@ func init() {
 
 		return New(context.Background(), parameters)
 	}
+}
 
-	testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
+func newDriverConstructor(tb testing.TB) testsuites.DriverConstructor {
+	root := tb.TempDir()
+
+	return func() (storagedriver.StorageDriver, error) {
 		return gcsDriverConstructor(root)
-	}, skipGCS)
+	}
+}
+
+func TestGCSDriverSuite(t *testing.T) {
+	skipCheck(t)
+	testsuites.Driver(t, newDriverConstructor(t))
+}
+
+func BenchmarkGCSDriverSuite(b *testing.B) {
+	skipCheck(b)
+	testsuites.BenchDriver(b, newDriverConstructor(b))
 }
 
 // Test Committing a FileWriter without having called Write
 func TestCommitEmpty(t *testing.T) {
-	if skipGCS() != "" {
-		t.Skip(skipGCS())
-	}
+	skipCheck(t)
 
 	validRoot := t.TempDir()
 
@@ -147,9 +144,7 @@ func TestCommitEmpty(t *testing.T) {
 // Test Committing a FileWriter after having written exactly
 // defaultChunksize bytes.
 func TestCommit(t *testing.T) {
-	if skipGCS() != "" {
-		t.Skip(skipGCS())
-	}
+	skipCheck(t)
 
 	validRoot := t.TempDir()
 
@@ -193,9 +188,7 @@ func TestCommit(t *testing.T) {
 }
 
 func TestRetry(t *testing.T) {
-	if skipGCS() != "" {
-		t.Skip(skipGCS())
-	}
+	skipCheck(t)
 
 	assertError := func(expected string, observed error) {
 		observedMsg := "<nil>"
@@ -230,9 +223,7 @@ func TestRetry(t *testing.T) {
 }
 
 func TestEmptyRootList(t *testing.T) {
-	if skipGCS() != "" {
-		t.Skip(skipGCS())
-	}
+	skipCheck(t)
 
 	validRoot := t.TempDir()
 
@@ -287,9 +278,7 @@ func TestEmptyRootList(t *testing.T) {
 
 // TestMoveDirectory checks that moving a directory returns an error.
 func TestMoveDirectory(t *testing.T) {
-	if skipGCS() != "" {
-		t.Skip(skipGCS())
-	}
+	skipCheck(t)
 
 	validRoot := t.TempDir()
 
@@ -314,6 +303,6 @@ func TestMoveDirectory(t *testing.T) {
 
 	err = driver.Move(ctx, "/parent/dir", "/parent/other")
 	if err == nil {
-		t.Fatalf("Moving directory /parent/dir /parent/other should have return a non-nil error\n")
+		t.Fatal("Moving directory /parent/dir /parent/other should have return a non-nil error")
 	}
 }

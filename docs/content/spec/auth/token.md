@@ -8,7 +8,7 @@ keywords: registry, on-prem, images, tags, repository, distribution, Bearer auth
 
 This document outlines the v2 Distribution registry authentication scheme:
 
-![v2 registry auth](../../../images/v2-registry-auth.png)
+![v2 registry auth](/distribution/images/v2-registry-auth.png)
 
 1. Attempt to begin a push/pull operation with the registry.
 2. If the registry requires authorization it will return a `401 Unauthorized`
@@ -16,7 +16,8 @@ This document outlines the v2 Distribution registry authentication scheme:
 3. The registry client makes a request to the authorization service for a
    Bearer token.
 4. The authorization service returns an opaque Bearer token representing the
-   client's authorized access.
+   client's authorized access. The token must comply with the structure
+   described in the [Token Authentication Implementation page](./jwt.md).
 5. The client retries the original request with the Bearer token embedded in
    the request's Authorization header.
 6. The Registry authorizes the client by validating the Bearer token and the
@@ -188,7 +189,7 @@ https://auth.docker.io/token?service=registry.docker.io&scope=repository:samalba
 
 The token server should first attempt to authenticate the client using any
 authentication credentials provided with the request. From Docker 1.11 the
-Docker engine supports both Basic Authentication and [OAuth2](../oauth) for
+Docker engine supports both Basic Authentication and [OAuth2](oauth.md) for
 getting tokens. Docker 1.10 and before, the registry client in the Docker Engine
 only supports Basic Authentication. If an attempt to authenticate to the token
 server fails, the token server should return a `401 Unauthorized` response

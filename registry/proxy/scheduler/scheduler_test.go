@@ -43,7 +43,7 @@ func TestSchedule(t *testing.T) {
 	s := New(dcontext.Background(), inmemory.New(), "/ttl")
 	deleteFunc := func(repoName reference.Reference) error {
 		if len(remainingRepos) == 0 {
-			t.Fatalf("Incorrect expiry count")
+			t.Fatal("Incorrect expiry count")
 		}
 		_, ok := remainingRepos[repoName.String()]
 		if !ok {
@@ -136,7 +136,12 @@ func TestRestoreOld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error starting ttlExpirationScheduler: %s", err)
 	}
-	defer s.Stop()
+	defer func(s *TTLExpirationScheduler) {
+		err := s.Stop()
+		if err != nil {
+			t.Fatalf("Error stopping ttlExpirationScheduler: %s", err)
+		}
+	}(s)
 
 	wg.Wait()
 	mu.Lock()
@@ -170,14 +175,17 @@ func TestStopRestore(t *testing.T) {
 
 	err := s.Start()
 	if err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err)
 	}
 	s.add(ref1, 300*timeUnit, entryTypeBlob)
 	s.add(ref2, 100*timeUnit, entryTypeBlob)
 
 	// Start and stop before all operations complete
 	// state will be written to fs
-	s.Stop()
+	err = s.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(10 * time.Millisecond)
 
 	// v2 will restore state from fs
@@ -200,10 +208,10 @@ func TestDoubleStart(t *testing.T) {
 	s := New(dcontext.Background(), inmemory.New(), "/ttl")
 	err := s.Start()
 	if err != nil {
-		t.Fatalf("Unable to start scheduler")
+		t.Fatal("Unable to start scheduler")
 	}
 	err = s.Start()
 	if err == nil {
-		t.Fatalf("Scheduler started twice without error")
+		t.Fatal("Scheduler started twice without error")
 	}
 }
