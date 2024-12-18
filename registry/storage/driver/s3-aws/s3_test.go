@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"reflect"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
-
 	"github.com/distribution/distribution/v3/internal/dcontext"
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
 	"github.com/distribution/distribution/v3/registry/storage/driver/testsuites"
@@ -24,36 +24,30 @@ import (
 
 var (
 	s3DriverConstructor func(rootDirectory, storageClass string) (*Driver, error)
-	skipS3              func() string
+	skipCheck           func(tb testing.TB)
 )
 
 func init() {
 	var (
-		accessKey        = os.Getenv("AWS_ACCESS_KEY")
-		secretKey        = os.Getenv("AWS_SECRET_KEY")
-		bucket           = os.Getenv("S3_BUCKET")
-		encrypt          = os.Getenv("S3_ENCRYPT")
-		keyID            = os.Getenv("S3_KEY_ID")
-		secure           = os.Getenv("S3_SECURE")
-		skipVerify       = os.Getenv("S3_SKIP_VERIFY")
-		v4Auth           = os.Getenv("S3_V4_AUTH")
-		region           = os.Getenv("AWS_REGION")
-		objectACL        = os.Getenv("S3_OBJECT_ACL")
-		regionEndpoint   = os.Getenv("REGION_ENDPOINT")
-		forcePathStyle   = os.Getenv("AWS_S3_FORCE_PATH_STYLE")
-		sessionToken     = os.Getenv("AWS_SESSION_TOKEN")
-		useDualStack     = os.Getenv("S3_USE_DUALSTACK")
-		combineSmallPart = os.Getenv("MULTIPART_COMBINE_SMALL_PART")
-		accelerate       = os.Getenv("S3_ACCELERATE")
-		logLevel         = os.Getenv("S3_LOGLEVEL")
+		accessKey      = os.Getenv("AWS_ACCESS_KEY")
+		secretKey      = os.Getenv("AWS_SECRET_KEY")
+		bucket         = os.Getenv("S3_BUCKET")
+		encrypt        = os.Getenv("S3_ENCRYPT")
+		keyID          = os.Getenv("S3_KEY_ID")
+		secure         = os.Getenv("S3_SECURE")
+		skipVerify     = os.Getenv("S3_SKIP_VERIFY")
+		v4Auth         = os.Getenv("S3_V4_AUTH")
+		region         = os.Getenv("AWS_REGION")
+		objectACL      = os.Getenv("S3_OBJECT_ACL")
+		regionEndpoint = os.Getenv("REGION_ENDPOINT")
+		forcePathStyle = os.Getenv("AWS_S3_FORCE_PATH_STYLE")
+		sessionToken   = os.Getenv("AWS_SESSION_TOKEN")
+		useDualStack   = os.Getenv("S3_USE_DUALSTACK")
+		accelerate     = os.Getenv("S3_ACCELERATE")
+		logLevel       = os.Getenv("S3_LOGLEVEL")
 	)
 
-	root, err := os.MkdirTemp("", "driver-")
-	if err != nil {
-		panic(err)
-	}
-	defer os.Remove(root)
-
+	var err error
 	s3DriverConstructor = func(rootDirectory, storageClass string) (*Driver, error) {
 		encryptBool := false
 		if encrypt != "" {
@@ -86,7 +80,7 @@ func init() {
 				return nil, err
 			}
 		}
-		forcePathStyleBool := true
+		forcePathStyleBool := false
 		if forcePathStyle != "" {
 			forcePathStyleBool, err = strconv.ParseBool(forcePathStyle)
 			if err != nil {
@@ -99,14 +93,6 @@ func init() {
 			useDualStackBool, err = strconv.ParseBool(useDualStack)
 		}
 
-		multipartCombineSmallPart := true
-		if combineSmallPart != "" {
-			multipartCombineSmallPart, err = strconv.ParseBool(combineSmallPart)
-			if err != nil {
-				return nil, err
-			}
-		}
-
 		accelerateBool := true
 		if accelerate != "" {
 			accelerateBool, err = strconv.ParseBool(accelerate)
@@ -115,53 +101,69 @@ func init() {
 			}
 		}
 
+		if objectACL == "" {
+			objectACL = s3.ObjectCannedACLPrivate
+		}
+
 		parameters := DriverParameters{
-			accessKey,
-			secretKey,
-			bucket,
-			region,
-			regionEndpoint,
-			forcePathStyleBool,
-			encryptBool,
-			keyID,
-			secureBool,
-			skipVerifyBool,
-			v4Bool,
-			minChunkSize,
-			defaultMultipartCopyChunkSize,
-			defaultMultipartCopyMaxConcurrency,
-			defaultMultipartCopyThresholdSize,
-			multipartCombineSmallPart,
-			rootDirectory,
-			storageClass,
-			driverName + "-test",
-			objectACL,
-			sessionToken,
-			useDualStackBool,
-			accelerateBool,
-			getS3LogLevelFromParam(logLevel),
+			AccessKey:                   accessKey,
+			SecretKey:                   secretKey,
+			Bucket:                      bucket,
+			Region:                      region,
+			RegionEndpoint:              regionEndpoint,
+			ForcePathStyle:              forcePathStyleBool,
+			Encrypt:                     encryptBool,
+			KeyID:                       keyID,
+			Secure:                      secureBool,
+			SkipVerify:                  skipVerifyBool,
+			V4Auth:                      v4Bool,
+			ChunkSize:                   minChunkSize,
+			MultipartCopyChunkSize:      defaultMultipartCopyChunkSize,
+			MultipartCopyMaxConcurrency: defaultMultipartCopyMaxConcurrency,
+			MultipartCopyThresholdSize:  defaultMultipartCopyThresholdSize,
+			RootDirectory:               rootDirectory,
+			StorageClass:                storageClass,
+			UserAgent:                   driverName + "-test",
+			ObjectACL:                   objectACL,
+			SessionToken:                sessionToken,
+			UseDualStack:                useDualStackBool,
+			Accelerate:                  accelerateBool,
+			LogLevel:                    getS3LogLevelFromParam(logLevel),
 		}
 
 		return New(context.Background(), parameters)
 	}
 
 	// Skip S3 storage driver tests if environment variable parameters are not provided
-	skipS3 = func() string {
-		if accessKey == "" || secretKey == "" || region == "" || bucket == "" || encrypt == "" {
-			return "Must set AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_REGION, S3_BUCKET, and S3_ENCRYPT to run S3 tests"
-		}
-		return ""
-	}
+	skipCheck = func(tb testing.TB) {
+		tb.Helper()
 
-	testsuites.RegisterSuite(func() (storagedriver.StorageDriver, error) {
+		if accessKey == "" || secretKey == "" || region == "" || bucket == "" || encrypt == "" {
+			tb.Skip("Must set AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_REGION, S3_BUCKET, and S3_ENCRYPT to run S3 tests")
+		}
+	}
+}
+
+func newDriverConstructor(tb testing.TB) testsuites.DriverConstructor {
+	root := tb.TempDir()
+
+	return func() (storagedriver.StorageDriver, error) {
 		return s3DriverConstructor(root, s3.StorageClassStandard)
-	}, skipS3)
+	}
+}
+
+func TestS3DriverSuite(t *testing.T) {
+	skipCheck(t)
+	testsuites.Driver(t, newDriverConstructor(t))
+}
+
+func BenchmarkS3DriverSuite(b *testing.B) {
+	skipCheck(b)
+	testsuites.BenchDriver(b, newDriverConstructor(b))
 }
 
 func TestEmptyRootList(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
-	}
+	skipCheck(t)
 
 	validRoot := t.TempDir()
 	rootedDriver, err := s3DriverConstructor(validRoot, s3.StorageClassStandard)
@@ -204,10 +206,59 @@ func TestEmptyRootList(t *testing.T) {
 	}
 }
 
-func TestStorageClass(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
+func TestClientTransport(t *testing.T) {
+	skipCheck(t)
+
+	testCases := []struct {
+		skipverify bool
+	}{
+		{true},
+		{false},
 	}
+
+	for _, tc := range testCases {
+		// NOTE(milosgajdos): we cannot simply reuse s3DriverConstructor
+		// because s3DriverConstructor is initialized in init() using the process
+		// env vars: we can not override S3_SKIP_VERIFY env var with t.Setenv
+		params := map[string]interface{}{
+			"region":     os.Getenv("AWS_REGION"),
+			"bucket":     os.Getenv("S3_BUCKET"),
+			"skipverify": tc.skipverify,
+		}
+		t.Run(fmt.Sprintf("SkipVerify %v", tc.skipverify), func(t *testing.T) {
+			drv, err := FromParameters(context.TODO(), params)
+			if err != nil {
+				t.Fatalf("failed to create driver: %v", err)
+			}
+
+			s3drv := drv.baseEmbed.Base.StorageDriver.(*driver)
+			if tc.skipverify {
+				tr, ok := s3drv.S3.Client.Config.HTTPClient.Transport.(*http.Transport)
+				if !ok {
+					t.Fatal("unexpected driver transport")
+				}
+				if !tr.TLSClientConfig.InsecureSkipVerify {
+					t.Errorf("unexpected TLS Config. Expected InsecureSkipVerify: %v, got %v",
+						tc.skipverify,
+						tr.TLSClientConfig.InsecureSkipVerify)
+				}
+				// make sure the proxy is always set
+				if tr.Proxy == nil {
+					t.Fatal("missing HTTP transport proxy config")
+				}
+				return
+			}
+			// if tc.skipverify is false we do not override the driver
+			// HTTP client transport and leave it to the AWS SDK.
+			if s3drv.S3.Client.Config.HTTPClient.Transport != nil {
+				t.Errorf("unexpected S3 driver client transport")
+			}
+		})
+	}
+}
+
+func TestStorageClass(t *testing.T) {
+	skipCheck(t)
 
 	rootDir := t.TempDir()
 	contents := []byte("contents")
@@ -269,9 +320,7 @@ func TestStorageClass(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
-	}
+	skipCheck(t)
 
 	rootDir := t.TempDir()
 
@@ -416,7 +465,7 @@ func TestDelete(t *testing.T) {
 
 			if tc.err != nil {
 				if err == nil {
-					t.Fatalf("expected error")
+					t.Fatal("expected error")
 				}
 				if !tc.err(err) {
 					t.Fatalf("error does not match expected: %s", err)
@@ -463,16 +512,94 @@ func TestDelete(t *testing.T) {
 			}
 
 			if len(issues) > 0 {
-				t.Fatalf(strings.Join(issues, "; \n\t"))
+				t.Fatal(strings.Join(issues, "; \n\t"))
 			}
 		})
 	}
 }
 
-func TestWalk(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
+func TestWalkEmptyUploadsDir(t *testing.T) {
+	skipCheck(t)
+
+	ctx := dcontext.Background()
+
+	drvr, err := s3DriverConstructor("s3walktest", s3.StorageClassStandard)
+	if err != nil {
+		t.Fatalf("unexpected error creating driver with standard storage: %v", err)
 	}
+
+	fileset := []string{
+		"/docker/registry/v2/blobs/sha256/04/046909",
+		"/docker/registry/v2/blobs/sha256/07/071a45",
+		"/docker/registry/v2/repositories/testns/testimg/_layers/sha256/2a43dc",
+		"/docker/registry/v2/repositories/testns/testimg/_layers/sha256/3ae7e8",
+		"/docker/registry/v2/repositories/testns/testimg/_manifests/revisions/sha256/3ae7e8",
+		"/docker/registry/v2/repositories/testns/testimg/_uploads/",
+	}
+
+	// create file structure matching fileset above.
+	// we use the s3 sdk directly because the driver doesn't allow creation
+	// of empty directories, which we need to simulate cases when purgeuploads
+	// leaves behind empty directories.
+	created := make([]string, 0, len(fileset))
+	d := drvr.baseEmbed.Base.StorageDriver.(*driver)
+	for _, p := range fileset {
+		_, err := d.S3.PutObjectWithContext(ctx, &s3.PutObjectInput{
+			Bucket:               aws.String(d.Bucket),
+			Key:                  aws.String(d.s3Path(p)),
+			ContentType:          d.getContentType(),
+			ACL:                  d.getACL(),
+			ServerSideEncryption: d.getEncryptionMode(),
+			SSEKMSKeyId:          d.getSSEKMSKeyID(),
+			StorageClass:         d.getStorageClass(),
+			Body:                 bytes.NewReader([]byte("content " + p)),
+		})
+		if err != nil {
+			fmt.Printf("unable to create file %s: %s\n", p, err)
+			continue
+		}
+		created = append(created, p)
+	}
+
+	// use a custom cleanup here because we create an empty dir during this test's
+	// setup, and the regular driver.Delete will error when trying to delete it.
+	defer func() {
+		s3Objects := make([]*s3.ObjectIdentifier, 0, len(fileset))
+		for _, p := range created {
+			s3Objects = append(s3Objects, &s3.ObjectIdentifier{
+				Key: aws.String(d.s3Path(p)),
+			})
+		}
+		resp, err := d.S3.DeleteObjectsWithContext(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(d.Bucket),
+			Delete: &s3.Delete{
+				Objects: s3Objects,
+				Quiet:   aws.Bool(false),
+			},
+		})
+		if err != nil {
+			t.Logf("DeleteObjectsWithContext resp: %+v", resp)
+			t.Fatalf("cleanup failed: %s", err)
+		}
+	}()
+
+	err = drvr.Walk(ctx, "/docker/registry/v2", func(fileInfo storagedriver.FileInfo) error {
+		// attempt to split filepath into dir and filename, just like purgeuploads would.
+		filePath := fileInfo.Path()
+		_, file := path.Split(filePath)
+		if len(file) == 0 {
+			t.Logf("fileInfo.Path(): %s", fileInfo.Path())
+			t.Fatalf("File part of fileInfo.Path() had zero length, this shouldn't happen.")
+		}
+		return nil
+	}, func(*storagedriver.WalkOptions) {})
+	if err != nil {
+		t.Fatalf("driver.Walk failed: %s", err)
+	}
+}
+
+func TestWalk(t *testing.T) {
+	skipCheck(t)
 
 	rootDir := t.TempDir()
 
@@ -700,10 +827,10 @@ func TestWalk(t *testing.T) {
 				return tc.fn(fileInfo)
 			}, tc.options...)
 			if tc.err && err == nil {
-				t.Fatalf("expected err")
+				t.Fatal("expected err")
 			}
 			if !tc.err && err != nil {
-				t.Fatalf(err.Error())
+				t.Fatal(err)
 			}
 			compareWalked(t, tc.expected, walked)
 		})
@@ -711,9 +838,7 @@ func TestWalk(t *testing.T) {
 }
 
 func TestOverThousandBlobs(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
-	}
+	skipCheck(t)
 
 	rootDir := t.TempDir()
 	standardDriver, err := s3DriverConstructor(rootDir, s3.StorageClassStandard)
@@ -739,9 +864,7 @@ func TestOverThousandBlobs(t *testing.T) {
 }
 
 func TestMoveWithMultipartCopy(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
-	}
+	skipCheck(t)
 
 	rootDir := t.TempDir()
 	d, err := s3DriverConstructor(rootDir, s3.StorageClassStandard)
@@ -792,9 +915,7 @@ func TestMoveWithMultipartCopy(t *testing.T) {
 }
 
 func TestListObjectsV2(t *testing.T) {
-	if skipS3() != "" {
-		t.Skip(skipS3())
-	}
+	skipCheck(t)
 
 	rootDir := t.TempDir()
 	d, err := s3DriverConstructor(rootDir, s3.StorageClassStandard)
@@ -839,7 +960,7 @@ func TestListObjectsV2(t *testing.T) {
 	sort.Strings(subPaths)
 	sort.Strings(result)
 	if !reflect.DeepEqual(subPaths, result) {
-		t.Fatalf("unexpected list result")
+		t.Fatal("unexpected list result")
 	}
 
 	var walkPaths []string
@@ -847,11 +968,11 @@ func TestListObjectsV2(t *testing.T) {
 		walkPaths = append(walkPaths, fileInfo.Path())
 		if fileInfo.Path() == path.Dir(subDirPath) {
 			if !fileInfo.IsDir() {
-				t.Fatalf("unexpected walking file info")
+				t.Fatal("unexpected walking file info")
 			}
 		} else {
 			if fileInfo.IsDir() || fileInfo.Size() != int64(len(fileInfo.Path())) {
-				t.Fatalf("unexpected walking file info")
+				t.Fatal("unexpected walking file info")
 			}
 		}
 		return nil
@@ -863,7 +984,7 @@ func TestListObjectsV2(t *testing.T) {
 	sort.Strings(walkPaths)
 	sort.Strings(subPaths)
 	if !reflect.DeepEqual(subPaths, walkPaths) {
-		t.Fatalf("unexpected walking paths")
+		t.Fatal("unexpected walking paths")
 	}
 
 	if err := d.Delete(ctx, prefix); err != nil {

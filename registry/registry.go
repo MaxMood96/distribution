@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,14 +18,18 @@ import (
 	gorhandlers "github.com/gorilla/handlers"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"github.com/distribution/distribution/v3/configuration"
 	"github.com/distribution/distribution/v3/health"
 	"github.com/distribution/distribution/v3/internal/dcontext"
 	"github.com/distribution/distribution/v3/registry/handlers"
 	"github.com/distribution/distribution/v3/registry/listener"
+	"github.com/distribution/distribution/v3/tracing"
 	"github.com/distribution/distribution/v3/version"
 )
 
@@ -74,11 +79,16 @@ var tlsVersions = map[string]uint16{
 	"tls1.3": tls.VersionTLS13,
 }
 
+// tlsClientAuth maps user-specified values to TLS Client Authentication constants.
+var tlsClientAuth = map[string]tls.ClientAuthType{
+	configuration.ClientAuthRequestClientCert:          tls.RequestClientCert,
+	configuration.ClientAuthRequireAnyClientCert:       tls.RequireAnyClientCert,
+	configuration.ClientAuthVerifyClientCertIfGiven:    tls.VerifyClientCertIfGiven,
+	configuration.ClientAuthRequireAndVerifyClientCert: tls.RequireAndVerifyClientCert,
+}
+
 // defaultLogFormatter is the default formatter to use for logs.
 const defaultLogFormatter = "text"
-
-// this channel gets notified when process receives signal. It is global to ease unit testing
-var quit = make(chan os.Signal, 1)
 
 // HandlerFunc defines an http middleware
 type HandlerFunc func(config *configuration.Configuration, handler http.Handler) http.Handler
@@ -97,7 +107,7 @@ var ServeCmd = &cobra.Command{
 	Long:  "`serve` stores and distributes Docker images.",
 	Run: func(cmd *cobra.Command, args []string) {
 		// setup context
-		ctx := dcontext.WithVersion(dcontext.Background(), version.Version)
+		ctx := dcontext.WithVersion(dcontext.Background(), version.Version())
 
 		config, err := resolveConfiguration(args)
 		if err != nil {
@@ -126,6 +136,7 @@ type Registry struct {
 	config *configuration.Configuration
 	app    *handlers.App
 	server *http.Server
+	quit   chan os.Signal
 }
 
 // NewRegistry creates a new registry from a context and configuration struct.
@@ -152,6 +163,15 @@ func NewRegistry(ctx context.Context, config *configuration.Configuration) (*Reg
 		handler = applyHandlerMiddleware(config, handler)
 	}
 
+	err = tracing.InitOpenTelemetry(app.Context)
+	if err != nil {
+		return nil, fmt.Errorf("error during open telemetry initialization: %v", err)
+	}
+	if config.HTTP.H2C.Enabled {
+		handler = h2c.NewHandler(handler, &http2.Server{})
+	}
+	handler = otelHandler(handler)
+
 	server := &http.Server{
 		Handler: handler,
 	}
@@ -160,7 +180,15 @@ func NewRegistry(ctx context.Context, config *configuration.Configuration) (*Reg
 		app:    app,
 		config: config,
 		server: server,
+		quit:   make(chan os.Signal, 1),
 	}, nil
+}
+
+// otelHandler returns an http.Handler that wraps the provided `next` handler with OpenTelemetry instrumentation.
+// This instrumentation tracks each HTTP request, creating spans with names derived from the request method and URL path.
+func otelHandler(next http.Handler) http.Handler {
+	return otelhttp.NewHandler(next, "",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }))
 }
 
 // takes a list of cipher suites and converts it to a list of respective tls constants
@@ -278,7 +306,18 @@ func (registry *Registry) ListenAndServe() error {
 				dcontext.GetLogger(registry.app).Debugf("CA Subject: %s", string(subj))
 			}
 
-			tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
+			if config.HTTP.TLS.ClientAuth != "" {
+				tlsClientAuthMod, ok := tlsClientAuth[string(config.HTTP.TLS.ClientAuth)]
+
+				if !ok {
+					return fmt.Errorf("unknown client auth mod '%s' specified for http.tls.clientauth", config.HTTP.TLS.ClientAuth)
+				}
+
+				tlsConf.ClientAuth = tlsClientAuthMod
+			} else {
+				tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
+			}
+
 			tlsConf.ClientCAs = pool
 		}
 
@@ -293,7 +332,7 @@ func (registry *Registry) ListenAndServe() error {
 	}
 
 	// setup channel to get notified on SIGTERM signal
-	signal.Notify(quit, syscall.SIGTERM)
+	signal.Notify(registry.quit, os.Interrupt, syscall.SIGTERM)
 	serveErr := make(chan error)
 
 	// Start serving in goroutine and listen for stop signal in main thread
@@ -304,13 +343,22 @@ func (registry *Registry) ListenAndServe() error {
 	select {
 	case err := <-serveErr:
 		return err
-	case <-quit:
+	case <-registry.quit:
 		dcontext.GetLogger(registry.app).Info("stopping server gracefully. Draining connections for ", config.HTTP.DrainTimeout)
 		// shutdown the server with a grace period of configured timeout
 		c, cancel := context.WithTimeout(context.Background(), config.HTTP.DrainTimeout)
 		defer cancel()
-		return registry.server.Shutdown(c)
+		return registry.Shutdown(c)
 	}
+}
+
+// Shutdown gracefully shuts down the registry's HTTP server and application object.
+func (registry *Registry) Shutdown(ctx context.Context) error {
+	err := registry.server.Shutdown(ctx)
+	if appErr := registry.app.Shutdown(); appErr != nil {
+		err = errors.Join(err, appErr)
+	}
+	return err
 }
 
 func configureDebugServer(config *configuration.Configuration) {

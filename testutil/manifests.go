@@ -6,8 +6,10 @@ import (
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/internal/dcontext"
 	"github.com/distribution/distribution/v3/manifest/manifestlist"
+	"github.com/distribution/distribution/v3/manifest/ocischema"
 	"github.com/distribution/distribution/v3/manifest/schema2"
 	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // MakeManifestList constructs a manifest list out of a list of manifest digests
@@ -49,15 +51,36 @@ func MakeSchema2Manifest(repository distribution.Repository, digests []digest.Di
 		return nil, fmt.Errorf("unexpected error storing content in blobstore: %v", err)
 	}
 	builder := schema2.NewManifestBuilder(d, configJSON)
-	for _, digest := range digests {
-		if err := builder.AppendReference(distribution.Descriptor{Digest: digest}); err != nil {
-			return nil, fmt.Errorf("unexpected error building manifest: %v", err)
+	for _, dgst := range digests {
+		if err := builder.AppendReference(v1.Descriptor{Digest: dgst}); err != nil {
+			return nil, fmt.Errorf("unexpected error building schema2 manifest: %v", err)
 		}
 	}
 
 	mfst, err := builder.Build(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("unexpected error generating manifest: %v", err)
+		return nil, fmt.Errorf("unexpected error generating schema2 manifest: %v", err)
+	}
+
+	return mfst, nil
+}
+
+func MakeOCIManifest(repository distribution.Repository, digests []digest.Digest) (distribution.Manifest, error) {
+	ctx := dcontext.Background()
+	blobStore := repository.Blobs(ctx)
+
+	var configJSON []byte
+
+	builder := ocischema.NewManifestBuilder(blobStore, configJSON, make(map[string]string))
+	for _, dgst := range digests {
+		if err := builder.AppendReference(v1.Descriptor{Digest: dgst}); err != nil {
+			return nil, fmt.Errorf("unexpected error building OCI manifest: %v", err)
+		}
+	}
+
+	mfst, err := builder.Build(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unexpected error generating OCI manifest: %v", err)
 	}
 
 	return mfst, nil

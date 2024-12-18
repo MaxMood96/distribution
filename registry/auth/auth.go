@@ -45,8 +45,18 @@ var (
 	ErrAuthenticationFailure = errors.New("authentication failure")
 )
 
+// InitFunc is the type of an AccessController factory function and is used
+// to register the constructor for different AccessController backends.
+type InitFunc func(options map[string]interface{}) (AccessController, error)
+
+var accessControllers map[string]InitFunc
+
+func init() {
+	accessControllers = make(map[string]InitFunc)
+}
+
 // UserInfo carries information about
-// an autenticated/authorized client.
+// an authenticated/authorized client.
 type UserInfo struct {
 	Name string
 }
@@ -102,16 +112,6 @@ type AccessController interface {
 // CredentialAuthenticator is an object which is able to authenticate credentials
 type CredentialAuthenticator interface {
 	AuthenticateUser(username, password string) error
-}
-
-// InitFunc is the type of an AccessController factory function and is used
-// to register the constructor for different AccesController backends.
-type InitFunc func(options map[string]interface{}) (AccessController, error)
-
-var accessControllers map[string]InitFunc
-
-func init() {
-	accessControllers = make(map[string]InitFunc)
 }
 
 // Register is used to register an InitFunc for

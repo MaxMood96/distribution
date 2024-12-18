@@ -35,6 +35,23 @@ REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/somewhere
 This variable overrides the `/var/lib/registry` value to the `/somewhere`
 directory.
 
+In order to override elements of a list, provide the index of the element
+you wish to change as part of the path to that element. For example, to
+configure the `hosts` list under `letsencrypt`:
+
+```yaml
+http:
+  tls:
+    letsencrypt:
+      hosts: [myregistryaddress.org]
+```
+
+The corresponding environment variable would be:
+
+```sh
+REGISTRY_HTTP_TLS_LETSENCRYPT_HOSTS_0=registry.example.com
+```
+
 > **Note**: Create a base configuration file with environment variables that can
 > be configured to tweak individual values. Overriding configuration sections
 > with environment variables is not recommended.
@@ -50,7 +67,7 @@ specify it in the `docker run` command:
 
 ```bash
 $ docker run -d -p 5000:5000 --restart=always --name registry \
-             -v `pwd`/config.yml:/etc/docker/registry/config.yml \
+             -v `pwd`/config.yml:/etc/distribution/config.yml \
              registry:2
 ```
 
@@ -141,6 +158,8 @@ storage:
     usedualstack: false
     loglevel: debug
   inmemory:  # This driver takes no parameters
+  tag:
+    concurrencylimit: 8
   delete:
     enabled: false
   redirect:
@@ -166,6 +185,10 @@ auth:
     service: token-service
     issuer: registry-token-issuer
     rootcertbundle: /root/certs/bundle
+    jwks: /path/to/jwks
+    signingalgorithms:
+        - EdDSA
+        - HS256
   htpasswd:
     realm: basic-realm
     path: /path/to/htpasswd
@@ -206,6 +229,7 @@ http:
     clientcas:
       - /path/to/ca.pem
       - /path/to/another/ca.pem
+    clientauth: require-and-verify-client-cert
     letsencrypt:
       cachefile: /path/to/cache-file
       email: emailused@letsencrypt.com
@@ -220,6 +244,8 @@ http:
     X-Content-Type-Options: [nosniff]
   http2:
     disabled: false
+  h2c:
+    enabled: false
 notifications:
   events:
     includereferences: true
@@ -239,16 +265,20 @@ notifications:
         actions:
            - pull
 redis:
-  addr: localhost:6379
+  tls:
+    certificate: /path/to/cert.crt
+    key: /path/to/key.pem
+    clientcas:
+      - /path/to/ca.pem
+  addrs: [localhost:6379]
   password: asecret
   db: 0
   dialtimeout: 10ms
   readtimeout: 10ms
   writetimeout: 10ms
-  pool:
-    maxidle: 16
-    maxactive: 64
-    idletimeout: 300s
+  maxidleconns: 16
+  poolsize: 64
+  connmaxidletime: 300s
   tls:
     enabled: false
 health:
@@ -276,6 +306,9 @@ proxy:
   remoteurl: https://registry-1.docker.io
   username: [username]
   password: [password]
+  exec:
+    command: docker-credential-helper
+    lifetime: 1h
   ttl: 168h
 validation:
   manifests:
@@ -284,6 +317,11 @@ validation:
         - ^https?://([^/]+\.)*example\.com/
       deny:
         - ^https?://www\.example\.com/
+    indexes:
+      platforms: List
+      platformlist:
+      - architecture: amd64
+        os: linux
 ```
 
 In some instances a configuration option is **optional** but it contains child
@@ -434,17 +472,17 @@ The `storage` option is **required** and defines which storage backend is in
 use. You must configure exactly one backend. If you configure more, the registry
 returns an error. You can choose any of these backend storage drivers:
 
-| Storage driver      | Description                                                                                                                                                                                                                                                                              |
-|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `filesystem`        | Uses the local disk to store registry files. It is ideal for development and may be appropriate for some small-scale production applications. See the [driver's reference documentation](/storage-drivers/filesystem). |
-| `azure`             | Uses Microsoft Azure Blob Storage. See the [driver's reference documentation](/storage-drivers/azure).                                                                                                               |
-| `gcs`               | Uses Google Cloud Storage. See the [driver's reference documentation](/storage-drivers/gcs).                                                                                                                           |
-| `s3`                | Uses Amazon Simple Storage Service (S3) and compatible Storage Services. See the [driver's reference documentation](/storage-drivers/s3).                                                                            |
+| Storage driver | Description                                                                                                                                                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filesystem`   | Uses the local disk to store registry files. It is ideal for development and may be appropriate for some small-scale production applications. See the [driver's reference documentation](../storage-drivers/filesystem.md). |
+| `azure`        | Uses Microsoft Azure Blob Storage. See the [driver's reference documentation](../storage-drivers/azure.md).                                                                                                                 |
+| `gcs`          | Uses Google Cloud Storage. See the [driver's reference documentation](../storage-drivers/gcs.md).                                                                                                                           |
+| `s3`           | Uses Amazon Simple Storage Service (S3) and compatible Storage Services. See the [driver's reference documentation](../storage-drivers/s3.md).                                                                              |
 
 For testing only, you can use the [`inmemory` storage
-driver](/storage-drivers/inmemory).
+driver](../storage-drivers/inmemory.md).
 If you would like to run a registry from volatile memory, use the
-[`filesystem` driver](/storage-drivers/filesystem)
+[`filesystem` driver](../storage-drivers/filesystem.md)
 on a ramdisk.
 
 If you are deploying a registry on Windows, a Windows volume mounted from the
@@ -519,6 +557,26 @@ parameter sets a limit on the number of descriptors to store in the cache.
 The default value is 10000. If this parameter is set to 0, the cache is allowed
 to grow with no size limit.
 
+### `tag`
+
+The `tag` subsection provides configuration to set concurrency limit for tag lookup.
+When user calls into the registry to delete the manifest, which in turn then does a
+lookup for all tags that reference the deleted manifest. To find the tag references,
+the registry will iterate every tag in the repository and read it's link file to check
+if it matches the deleted manifest (i.e. to see if uses the same sha256 digest).
+So, the more tags in repository, the worse the performance will be (as there will
+be more S3 API calls occurring for the tag directory lookups and tag file reads if
+using S3 storage driver).
+
+Therefore, add a single flag `concurrencylimit` to set concurrency limit to optimize tag
+lookup performance under the `tag` section. When a value is not provided or equal to 0,
+`GOMAXPROCS` will be used.
+
+```yaml
+tag:
+  concurrencylimit: 8
+```
+
 ### `redirect`
 
 The `redirect` subsection provides configuration for managing redirects from
@@ -548,6 +606,11 @@ auth:
     service: token-service
     issuer: registry-token-issuer
     rootcertbundle: /root/certs/bundle
+    jwks: /path/to/jwks
+    signingalgorithms:
+        - EdDSA
+        - HS256
+        - ES512
   htpasswd:
     realm: basic-realm
     path: /path/to/htpasswd
@@ -583,17 +646,54 @@ Token-based authentication allows you to decouple the authentication system from
 the registry. It is an established authentication paradigm with a high degree of
 security.
 
-| Parameter | Required | Description                                           |
-|-----------|----------|-------------------------------------------------------|
-| `realm`   | yes      | The realm in which the registry server authenticates. |
-| `service` | yes      | The service being authenticated.                      |
-| `issuer`  | yes      | The name of the token issuer. The issuer inserts this into the token so it must match the value configured for the issuer. |
-| `rootcertbundle` | yes | The absolute path to the root certificate bundle. This bundle contains the public part of the certificates used to sign authentication tokens. |
-| `autoredirect`   | no      | When set to `true`, `realm` will automatically be set using the Host header of the request as the domain and a path of `/auth/token/`|
+| Parameter            | Required | Description                                           |
+|----------------------|----------|-------------------------------------------------------|
+| `realm`              | yes      | The realm in which the registry server authenticates. |
+| `service`            | yes      | The service being authenticated.                      |
+| `issuer`             | yes      | The name of the token issuer. The issuer inserts this into the token so it must match the value configured for the issuer. |
+| `rootcertbundle`     | yes      | The absolute path to the root certificate bundle. This bundle contains the public part of the certificates used to sign authentication tokens. |
+| `autoredirect`       | no       | When set to `true`, `realm` will be set to the Host header of the request as the domain and a path of `/auth/token/`(or specified by `autoredirectpath`), the `realm` URL Scheme will use `X-Forwarded-Proto` header if set, otherwise it will be set to `https`. |
+| `autoredirectpath`   | no       | The path to redirect to if `autoredirect` is set to `true`, default: `/auth/token/`. |
+| `signingalgorithms`  | no       | A list of token signing algorithms to use for verifying token signatures. If left empty the default list of signing algorithms is used. Please see below for allowed values and default. |
+| `jwks`               | no       | The absolute path to the JSON Web Key Set (JWKS) file. The JWKS file contains the trusted keys used to verify the signature of authentication tokens. |
 
+Available `signingalgorithms`:
+- EdDSA
+- HS256
+- HS384
+- HS512
+- RS256
+- RS384
+- RS512
+- ES256
+- ES384
+- ES512
+- PS256
+- PS384
+- PS512
+
+Default `signingalgorithms`:
+- EdDSA
+- HS256
+- HS384
+- HS512
+- RS256
+- RS384
+- RS512
+- ES256
+- ES384
+- ES512
+- PS256
+- PS384
+- PS512
+
+Additional notes on `rootcertbundle`:
+
+- The public key of this certificate will be automatically added to the list of known keys.
+- The public key will be identified by it's [RFC7638 Thumbprint](https://datatracker.ietf.org/doc/html/rfc7638).
 
 For more information about Token based authentication configuration, see the
-[specification](/spec/auth/token).
+[specification](../spec/auth/token.md).
 
 ### `htpasswd`
 
@@ -709,6 +809,7 @@ http:
     clientcas:
       - /path/to/ca.pem
       - /path/to/another/ca.pem
+    clientauth: require-and-verify-client-cert
     minimumtls: tls1.2
     ciphersuites:
       - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
@@ -724,6 +825,8 @@ http:
     X-Content-Type-Options: [nosniff]
   http2:
     disabled: false
+  h2c:
+    enabled: false
 ```
 
 The `http` option details the configuration for the HTTP server that hosts the
@@ -747,13 +850,14 @@ for the server. If you already have a web server running on
 the same host as the registry, you may prefer to configure TLS on that web server
 and proxy connections to the registry server.
 
-| Parameter | Required | Description                                           |
-|-----------|----------|-------------------------------------------------------|
-| `certificate`  | yes  | Absolute path to the x509 certificate file.           |
-| `key`          | yes  | Absolute path to the x509 private key file.           |
-| `clientcas`    | no   | An array of absolute paths to x509 CA files.          |
-| `minimumtls`   | no   | Minimum TLS version allowed (tls1.0, tls1.1, tls1.2, tls1.3). Defaults to tls1.2 |
-| `ciphersuites` | no   | Cipher suites allowed. Please see below for allowed values and default. |
+| Parameter      | Required | Description                                                                                                                                                                                                                                                                                                                                                                                        |
+|----------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `certificate`  | yes  | Absolute path to the x509 certificate file.                                                                                                                                                                                                                                                                                                                                                        |
+| `key`          | yes  | Absolute path to the x509 private key file.                                                                                                                                                                                                                                                                                                                                                        |
+| `clientcas`    | no   | An array of absolute paths to x509 CA files.                                                                                                                                                                                                                                                                                                                                                       |
+| `clientauth`   | no   | Client certificate authentication mode. This setting determines how the server handles client certificates during the TLS handshake. If clientcas is not provided, TLS Client Authentication is disabled, and the mode is ignored. Allowed (request-client-cert, require-any-client-cert, verify-client-cert-if-given, require-and-verify-client-cert). Defaults to require-and-verify-client-cert |
+| `minimumtls`   | no   | Minimum TLS version allowed (tls1.0, tls1.1, tls1.2, tls1.3). Defaults to tls1.2                                                                                                                                                                                                                                                                                                                   |
+| `ciphersuites` | no   | Cipher suites allowed. Please see below for allowed values and default.                                                                                                                                                                                                                                                                                                                            |
 
 Available cipher suites:
 - TLS_RSA_WITH_RC4_128_SHA
@@ -870,12 +974,23 @@ registry. This header is included in the example configuration file.
 
 ### `http2`
 
-The `http2` structure within `http` is **optional**. Use this to control http2
+The `http2` structure within `http` is **optional**. Use this to control HTTP/2 over TLS
 settings for the registry.
+If `tls` is not configured this option is ignored. To enable HTTP/2 over non TLS connections use `h2c` instead.
 
 | Parameter | Required | Description                                           |
 |-----------|----------|-------------------------------------------------------|
 | `disabled` | no      | If `true`, then `http2` support is disabled.          |
+
+### `h2c`
+
+The `h2c` structure within `http` is **optional**. Use this to control H2C (HTTP/2 Cleartext)
+settings for the registry.
+Useful when deploying the registry behind a load balancer (e.g. Google Cloud Run)
+
+| Parameter | Required | Description                                           |
+|-----------|----------|-------------------------------------------------------|
+| `enabled` | no      | If `true`, then `h2c` support is enabled.              |
 
 ## `notifications`
 
@@ -937,71 +1052,45 @@ The `events` structure configures the information provided in event notification
 
 ## `redis`
 
+Declare parameters for constructing the `redis` connections. Registry instances
+may use the Redis instance for several applications. Currently, it caches
+information about immutable blobs. Most of the `redis` options control
+how the registry connects to the `redis` instance.
+
+You should configure Redis with the **allkeys-lru** eviction policy, because the
+registry does not set an expiration value on keys.
+
+Under the hood distribution uses [`go-redis`](https://github.com/redis/go-redis) Go module for
+Redis connectivity and its [`UniversalOptions`](https://pkg.go.dev/github.com/redis/go-redis/v9#UniversalOptions)
+struct.
+
+You can optionally specify TLS configuration on top of the `UniversalOptions` settings.
+
+Use these settings to configure Redis TLS:
+
+| Parameter | Required | Description                                           |
+|-----------|----------|-------------------------------------------------------|
+| `certificate`  | yes  | Absolute path to the x509 certificate file.           |
+| `key`          | yes  | Absolute path to the x509 private key file.           |
+| `clientcas`    | no   | An array of absolute paths to x509 CA files.          |
+
 ```yaml
 redis:
-  addr: localhost:6379
+  tls:
+    certificate: /path/to/cert.crt
+    key: /path/to/key.pem
+    clientcas:
+      - /path/to/ca.pem
+  addrs: [localhost:6379]
   password: asecret
   db: 0
   dialtimeout: 10ms
   readtimeout: 10ms
   writetimeout: 10ms
-  pool:
-    maxidle: 16
-    maxactive: 64
-    idletimeout: 300s
-  tls:
-    enabled: false
+  maxidleconns: 16
+  poolsize: 64
+  connmaxidletime: 300s
 ```
-
-Declare parameters for constructing the `redis` connections. Registry instances
-may use the Redis instance for several applications. Currently, it caches
-information about immutable blobs. Most of the `redis` options control
-how the registry connects to the `redis` instance. You can control the pool's
-behavior with the [pool](#pool) subsection. Additionally, you can control
-TLS connection settings with the [tls](#tls) subsection (in-transit encryption).
-
-You should configure Redis with the **allkeys-lru** eviction policy, because the
-registry does not set an expiration value on keys.
-
-| Parameter | Required | Description                                           |
-|-----------|----------|-------------------------------------------------------|
-| `addr`    | yes      | The address (host and port) of the Redis instance.    |
-| `password`| no       | A password used to authenticate to the Redis instance.|
-| `db`      | no       | The name of the database to use for each connection.  |
-| `dialtimeout` | no   | The timeout for connecting to the Redis instance.     |
-| `readtimeout` | no   | The timeout for reading from the Redis instance.      |
-| `writetimeout` | no  | The timeout for writing to the Redis instance.        |
-
-### `pool`
-
-```yaml
-pool:
-  maxidle: 16
-  maxactive: 64
-  idletimeout: 300s
-```
-
-Use these settings to configure the behavior of the Redis connection pool.
-
-| Parameter | Required | Description                                           |
-|-----------|----------|-------------------------------------------------------|
-| `maxidle` | no       | The maximum number of idle connections in the pool.   |
-| `maxactive`| no      | The maximum number of connections which can be open before blocking a connection request. |
-| `idletimeout`| no    | How long to wait before closing inactive connections. |
-
-### `tls`
-
-```yaml
-tls:
-  enabled: false
-```
-
-Use these settings to configure Redis TLS.
-
-| Parameter | Required | Description                           |
-|-----------|----------|-------------------------------------- |
-| `enabled` | no       | Whether or not to use TLS in-transit. |
-
 
 ## `health`
 
@@ -1099,21 +1188,36 @@ proxy:
 ```
 
 The `proxy` structure allows a registry to be configured as a pull-through cache
-to Docker Hub. See
-[mirror](/recipes/mirror)
+to an upstream registry such as Docker Hub. See
+[mirror](../recipes/mirror.md)
 for more information. Pushing to a registry configured as a pull-through cache
 is unsupported.
 
 | Parameter | Required | Description                                           |
 |-----------|----------|-------------------------------------------------------|
 | `remoteurl`| yes     | The URL for the repository on Docker Hub.             |
-| `username` | no      | The username registered with Docker Hub which has access to the repository. |
-| `password` | no      | The password used to authenticate to Docker Hub using the username specified in `username`. |
 | `ttl`      | no      | Expire proxy cache configured in "storage" after this time. Cache 168h(7 days) by default, set to 0 to disable cache expiration, The suffix is one of `ns`, `us`, `ms`, `s`, `m`, or `h`. If you specify a value but omit the suffix, the value is interpreted as a number of nanoseconds. |
 
+To enable pulling private repositories (e.g. `batman/robin`), specify one of the
+following authentication methods for the pull-through cache to authenticate with
+the upstream registry via the [v2 Distribution registry authentication
+scheme](https://distribution.github.io/distribution/spec/auth/token/).]
 
-To enable pulling private repositories (e.g. `batman/robin`) specify the
-username (such as `batman`) and the password for that username.
+### `username` and `password`
+
+The username and password used to authenticate with the upstream registry to
+access the private repositories.
+
+### `exec`
+
+Run a custom exec-based [Docker credential helper](https://github.com/docker/docker-credential-helpers)
+to retrieve the credentials to authenticate with the upstream registry.
+
+| Parameter | Required | Description                                           |
+|-----------|----------|-------------------------------------------------------|
+| `command` | yes      | The command to execute.                               |
+| `lifetime`| no       | The expiry period of the credentials. The credentials returned by the command is reused through the configured lifetime, then the command will be re-executed to retrieve new credentials. If set to zero, the command will be executed for every request. If not set, the command will only be executed once. |
+
 
 > **Note**: These private repositories are stored in the proxy cache's storage.
 > Take appropriate measures to protect access to the proxy cache.
@@ -1122,13 +1226,13 @@ username (such as `batman`) and the password for that username.
 
 ```yaml
 validation:
-  manifests:
-    urls:
-      allow:
-        - ^https?://([^/]+\.)*example\.com/
-      deny:
-        - ^https?://www\.example\.com/
+  disabled: false
 ```
+
+Use these settings to configure what validation the registry performs on content.
+
+Validation is performed when content is uploaded to the registry. Changing these
+settings will not validate content that has already been accepting into the registry.
 
 ### `disabled`
 
@@ -1142,6 +1246,16 @@ Use the `manifests` subsection to configure validation of manifests. If
 
 #### `urls`
 
+```yaml
+validation:
+  manifests:
+    urls:
+      allow:
+        - ^https?://([^/]+\.)*example\.com/
+      deny:
+        - ^https?://www\.example\.com/
+```
+
 The `allow` and `deny` options are each a list of
 [regular expressions](https://pkg.go.dev/regexp/syntax) that restrict the URLs in
 pushed manifests.
@@ -1154,6 +1268,54 @@ one of the `allow` regular expressions **and** one of the following holds:
 1. `deny` is unset.
 2. `deny` is set but no URLs within the manifest match any of the `deny` regular
    expressions.
+
+#### `indexes`
+
+By default the registry will validate that all platform images exist when an image
+index is uploaded to the registry. Disabling this validatation is experimental
+because other tooling that uses the registry may expect the image index to be complete.
+
+validation:
+  manifests:
+    indexes:
+      platforms: [all|none|list]
+      platformlist:
+      - os: linux
+        architecture: amd64
+
+Use these settings to configure what validation the registry performs on image
+index manifests uploaded to the registry.
+
+##### `platforms`
+
+Set `platformexist` to `all` (the default) to validate all platform images exist.
+The registry will validate that the images referenced by the index exist in the
+registry before accepting the image index.
+
+Set `platforms` to `none` to disable all validation that images exist when an
+image index manifest is uploaded. This allows image lists to be uploaded to the
+registry without their associated images. This setting is experimental because
+other tooling that uses the registry may expect the image index to be complete.
+
+Set `platforms` to `list` to selectively validate the existence of platforms
+within image index manifests. This setting is experimental because other tooling
+that uses the registry may expect the image index to be complete.
+
+##### `platformlist`
+
+When `platforms` is set to `list`, set `platformlist` to an array of
+platforms to validate. If a platform is included in this the array and in the images
+contained within an index, the registry will validate that the platform specific image
+exists in the registry before accepting the index. The registry will not validate the
+existence of platform specific images in the index that do not appear in the
+`platformlist` array.
+
+This parameter does not validate that the configured platforms are included in every
+index. If an image index does not include one of the platform specific images configured
+in the `platformlist` array, it may still be accepted by the registry.
+
+Each platform is a map with two keys, `os` and `architecture`, as defined in the
+[OCI Image Index specification](https://github.com/opencontainers/image-spec/blob/main/image-index.md#image-index-property-descriptions).
 
 ## Example: Development configuration
 
